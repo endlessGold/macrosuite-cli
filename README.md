@@ -60,8 +60,7 @@ macrosuite diag [mock-events|key-log]
 프로젝트 설정 > 전역 설정 > 기본값 순으로 겹쳐진다 — `macrosuite config`로
 지금 값이 어디서 왔는지 확인할 수 있다.
 
-전체 명령 문서와 설정/안전 설계는 모노레포에 있다 (현재 `cli-config-and-
-library` 브랜치, main으로 병합되면 링크를 옮길 것):
+전체 명령 문서와 설정/안전 설계는 모노레포에 있다:
 
-- [`docs/api/cli.md`](https://github.com/endlessGold/macrosuite-engine/blob/cli-config-and-library/docs/api/cli.md)
-- [`docs/api/cli-design.md`](https://github.com/endlessGold/macrosuite-engine/blob/cli-config-and-library/docs/api/cli-design.md)
+- [`docs/api/cli.md`](https://github.com/endlessGold/macrosuite-engine/blob/main/docs/api/cli.md)
+- [`docs/api/cli-design.md`](https://github.com/endlessGold/macrosuite-engine/blob/main/docs/api/cli-design.md)
