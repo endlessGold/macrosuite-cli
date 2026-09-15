@@ -46,8 +46,8 @@ SDK가 정말로 전체 계약이라는 뜻이다. 다음 프런트엔드는 HTT
 ## 명령
 
 ```
-macrosuite status | watch | stop
-macrosuite macros [new|rm|run|stop|source|graph]
+macrosuite status | watch | stop | config
+macrosuite macros [new|rm|run|toggle|stop|source|save|graph]
 macrosuite library [account|login|logout|list|get|run|save|copy|rm]
 macrosuite groups [new|rm|rename|toggle|add|drop|key|unkey|mode]
 macrosuite hotkeys [set|clear]
@@ -56,7 +56,12 @@ macrosuite backend <mock|sendInput>
 macrosuite diag [mock-events|key-log]
 ```
 
-전체 명령 문서와 설정/안전 설계는 모노레포에 있다:
+설정(`config`, `.macrosuiterc.json`, 환경변수)은 플래그 > 환경변수 >
+프로젝트 설정 > 전역 설정 > 기본값 순으로 겹쳐진다 — `macrosuite config`로
+지금 값이 어디서 왔는지 확인할 수 있다.
 
-- [`docs/api/cli.md`](https://github.com/endlessGold/macrosuite-engine/blob/main/docs/api/cli.md)
-- [`docs/api/cli-design.md`](https://github.com/endlessGold/macrosuite-engine/blob/main/docs/api/cli-design.md)
+전체 명령 문서와 설정/안전 설계는 모노레포에 있다 (현재 `cli-config-and-
+library` 브랜치, main으로 병합되면 링크를 옮길 것):
+
+- [`docs/api/cli.md`](https://github.com/endlessGold/macrosuite-engine/blob/cli-config-and-library/docs/api/cli.md)
+- [`docs/api/cli-design.md`](https://github.com/endlessGold/macrosuite-engine/blob/cli-config-and-library/docs/api/cli-design.md)

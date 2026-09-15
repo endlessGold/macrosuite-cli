@@ -9,11 +9,13 @@
   "files": [
     "bin",
     "src",
+    "README.md",
     "vendor",
-    "README.md"
+    "test"
   ],
   "scripts": {
-    "start": "node ./bin/macrosuite.mjs"
+    "start": "node ./bin/macrosuite.mjs",
+    "test": "node --test test/*.test.mjs"
   },
   "engines": {
     "node": ">=18"

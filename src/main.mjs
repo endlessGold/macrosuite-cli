@@ -18,6 +18,7 @@ import {
 
 import { readFile } from 'node:fs/promises'
 
+import { ConfigError, describeSource, resolveConfig } from './config.mjs'
 import { dot, emit, fail, isJsonMode, setJsonMode, table } from './output.mjs'
 
 const HELP = `MacroSuite CLI — 매크로 런타임을 터미널에서 조작합니다.
@@ -34,8 +35,10 @@ const HELP = `MacroSuite CLI — 매크로 런타임을 터미널에서 조작�
   macros new <이름> [설명]        빈 매크로 생성
   macros rm <id>                  매크로 삭제
   macros run <id>                 한 번 실행
+  macros toggle <id>              실행 중이면 정지, 아니면 실행 (그룹 단축키와 동일 동작)
   macros stop <id>                실행 중인 매크로 정지
   macros source <id>              TypeScript 원본 출력
+  macros save <id> <파일|->       원본 교체 (.ts가 그대로 원본; 저장 즉시 재빌드)
   macros graph <id>               노드 그래프(JSON) 출력
 
 라이브러리 — 서버 계정 매크로. get/run이 서버 컴파일 캐시를 내려받아
@@ -83,6 +86,11 @@ const HELP = `MacroSuite CLI — 매크로 런타임을 터미널에서 조작�
   diag key-log stop               기록 정지
   diag key-log                    기록된 키 출력
 
+설정
+  config                          url/backend/lang/scope/json/timeout이
+                                   어디서 왔는지(플래그/환경변수/설정파일/
+                                   기본값) 보여줍니다
+
 옵션
   --url <주소>                    런타임 주소 (기본: http://127.0.0.1:17821)
   --backend <mock|sendInput>      run/add에 쓸 입력 모드 (기본: mock)
@@ -92,49 +100,66 @@ const HELP = `MacroSuite CLI — 매크로 런타임을 터미널에서 조작�
   -h, --help                      이 도움말
 
 입력 모드 주의: sendInput은 실제 키 입력을 지금 포커스된 창으로 보냅니다.
-기본값이 mock인 이유입니다.`
+기본값이 mock인 이유입니다.
 
-/** Flags can appear anywhere, so they are pulled out before the verbs are read. */
+설정 우선순위 (구체적인 것이 이긴다): 플래그 > 환경변수 > 프로젝트 설정
+(./.macrosuiterc.json) > 사용자 전역 설정 (Windows: %APPDATA%\\macrosuite\\
+config.json, 그 외: ~/.config/macrosuite/config.json) > 내장 기본값.
+url/backend/lang/scope/json/timeout만 설정 가능합니다 — visibility와
+revision은 실행마다 뜻이 달라지는 값이라 설정으로 못 앉힙니다. 환경변수:
+MACROSUITE_URL, MACROSUITE_BACKEND, MACROSUITE_LANG, MACROSUITE_SCOPE,
+MACROSUITE_JSON, MACROSUITE_TIMEOUT. 무엇이 어디서 왔는지는 \`macrosuite
+config\`로 확인하세요. sendInput이 플래그가 아닌 곳(환경변수/설정 파일)에서
+기본값으로 왔을 때는 실행 전에 경고를 띄웁니다 — 자세한 설계는
+docs/api/cli-design.md.`
+
+/**
+ * Flags can appear anywhere, so they are pulled out before the verbs are
+ * read. Only the *configurable* flags (url/backend/lang/scope/json/timeout)
+ * go into `explicit` — and only when the user actually typed them, never a
+ * default — because `resolveConfig` needs to tell "you asked for this" apart
+ * from "nobody asked, use mock". The rest (help/capture/visibility/revision)
+ * are CLI-local: they mean something different on every invocation, so they
+ * are never layered with env vars or config files (docs/api/cli-design.md).
+ */
 function parseArgs(argv) {
-  const options = {
-    url: undefined, backend: 'mock', json: false, timeoutMs: 5000, help: false, capture: false,
-    lang: 'typescript', scope: 'mine', visibility: 'private', revision: undefined,
-  }
+  const explicit = {}
+  const local = { help: false, capture: false, visibility: 'private', revision: undefined }
   const positional = []
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
     switch (arg) {
       case '--url':
-        options.url = argv[++i]
+        explicit.url = argv[++i]
         break
       case '--backend':
-        options.backend = argv[++i]
+        explicit.backend = argv[++i]
         break
       case '--timeout':
-        options.timeoutMs = Number(argv[++i])
+        explicit.timeoutMs = argv[++i]
         break
       case '--json':
-        options.json = true
+        explicit.json = true
         break
       case '--capture':
-        options.capture = true
+        local.capture = true
         break
       case '--lang':
-        options.lang = argv[++i]
+        explicit.lang = argv[++i]
         break
       case '--scope':
-        options.scope = argv[++i]
+        explicit.scope = argv[++i]
         break
       case '--visibility':
-        options.visibility = argv[++i]
+        local.visibility = argv[++i]
         break
       case '--revision':
-        options.revision = argv[++i]
+        local.revision = argv[++i]
         break
       case '-h':
       case '--help':
-        options.help = true
+        local.help = true
         break
       default:
         if (arg.startsWith('--')) throw new UsageError(`알 수 없는 옵션: ${arg}`)
@@ -142,20 +167,11 @@ function parseArgs(argv) {
     }
   }
 
-  if (options.backend !== 'mock' && options.backend !== 'sendInput') {
-    throw new UsageError(`--backend는 mock 또는 sendInput이어야 합니다 (받은 값: ${options.backend})`)
-  }
-  if (options.lang !== 'typescript' && options.lang !== 'json-dsl') {
-    throw new UsageError(`--lang은 typescript 또는 json-dsl이어야 합니다 (받은 값: ${options.lang})`)
-  }
-  if (options.scope !== 'mine' && options.scope !== 'public') {
-    throw new UsageError(`--scope는 mine 또는 public이어야 합니다 (받은 값: ${options.scope})`)
-  }
-  if (options.visibility !== 'private' && options.visibility !== 'public') {
-    throw new UsageError(`--visibility는 private 또는 public이어야 합니다 (받은 값: ${options.visibility})`)
+  if (local.visibility !== 'private' && local.visibility !== 'public') {
+    throw new UsageError(`--visibility는 private 또는 public이어야 합니다 (받은 값: ${local.visibility})`)
   }
 
-  return { options, positional }
+  return { explicit, local, positional }
 }
 
 class UsageError extends Error {}
@@ -178,7 +194,25 @@ export async function run(argv) {
     throw error
   }
 
-  const { options, positional } = parsed
+  const { explicit, local, positional } = parsed
+
+  // Provisional, so a broken config file can still report itself as JSON
+  // when the caller explicitly asked for --json; resolveConfig's own result
+  // (below) is what every command actually runs with.
+  setJsonMode(explicit.json === true)
+
+  let config
+  try {
+    config = resolveConfig(explicit)
+  } catch (error) {
+    if (error instanceof ConfigError) {
+      fail(error.message)
+      return
+    }
+    throw error
+  }
+
+  const options = { ...config.values, ...local }
   setJsonMode(options.json)
 
   if (options.help || positional.length === 0) {
@@ -189,7 +223,7 @@ export async function run(argv) {
   const client = new MacroSuiteClient({ baseUrl: options.url, timeoutMs: options.timeoutMs })
 
   try {
-    await dispatch(client, positional, options)
+    await dispatch(client, positional, options, config)
   } catch (error) {
     if (error instanceof UsageError) {
       fail(error.message)
@@ -206,7 +240,25 @@ export async function run(argv) {
   }
 }
 
-async function dispatch(client, args, options) {
+/**
+ * §5 of docs/api/cli-design.md: a config layer may default `backend` to
+ * `sendInput`, but never silently — a human running the command sees a
+ * warning before it does anything, and a `--json` caller finds the same fact
+ * as `backendSource` on the result so a script cannot miss it either.
+ */
+function warnIfImplicitSendInput(options, config) {
+  if (options.backend !== 'sendInput' || config.sources.backend.source === 'flag') return false
+  if (!isJsonMode()) {
+    console.error(`sendInput이 ${describeSource(config.sources.backend)}(으)로 설정되어 있습니다 — 실제 키 입력을 보냅니다.`)
+  }
+  return true
+}
+
+function withBackendSource(result, options, config) {
+  return warnIfImplicitSendInput(options, config) ? { ...result, backendSource: config.sources.backend.source } : result
+}
+
+async function dispatch(client, args, options, config) {
   const [command, ...rest] = args
 
   switch (command) {
@@ -216,12 +268,14 @@ async function dispatch(client, args, options) {
       return watchLoop(client)
     case 'stop':
       return emergencyStop(client)
+    case 'config':
+      return configCommand(config)
     case 'macros':
-      return macrosCommand(client, rest, options)
+      return macrosCommand(client, rest, options, config)
     case 'library':
-      return libraryCommand(client, rest, options)
+      return libraryCommand(client, rest, options, config)
     case 'groups':
-      return groupsCommand(client, rest, options)
+      return groupsCommand(client, rest, options, config)
     case 'backend':
       return setBackend(client, rest)
     case 'keys':
@@ -321,9 +375,30 @@ async function emergencyStop(client) {
   emit({ stoppedCount: stopped }, r => console.log(`${r.stoppedCount}개 매크로를 정지하고 모든 키를 해제했습니다.`))
 }
 
+// --- config --------------------------------------------------------------
+//
+// "왜 이렇게 동작하지?"에 항상 답할 수 있게 하는 명령 (docs/api/cli-design.md
+// §4). 다른 모든 명령이 이미 계산해 둔 `config`(resolveConfig의 결과)를 그냥
+// 보여주기만 한다 — 별도로 다시 읽지 않는다.
+
+async function configCommand(config) {
+  const rows = Object.keys(config.values).map(key => ({
+    key,
+    value: config.values[key],
+    ...config.sources[key],
+  }))
+  return emit(rows, list =>
+    table(list, [
+      { header: '키', value: r => r.key },
+      { header: '값', value: r => String(r.value) },
+      { header: '출처', value: r => describeSource(r) },
+    ]),
+  )
+}
+
 // --- macros ------------------------------------------------------------
 
-async function macrosCommand(client, args, options) {
+async function macrosCommand(client, args, options, config) {
   const [sub, ...rest] = args
 
   switch (sub ?? 'list') {
@@ -353,7 +428,7 @@ async function macrosCommand(client, args, options) {
     case 'run': {
       const id = need(rest[0], '매크로 id')
       const started = await client.macros.run(id, options.backend)
-      return emit(started, r => console.log(`실행: ${r.macroId} (입력 모드 ${r.backend})`))
+      return emit(withBackendSource(started, options, config), r => console.log(`실행: ${r.macroId} (입력 모드 ${r.backend})`))
     }
 
     case 'stop': {
@@ -362,10 +437,26 @@ async function macrosCommand(client, args, options) {
       return emit({ stopped: id }, r => console.log(`정지: ${r.stopped}`))
     }
 
+    case 'toggle': {
+      const id = need(rest[0], '매크로 id')
+      const action = await client.macros.toggle(id, options.backend)
+      return emit(withBackendSource({ macroId: id, action }, options, config), r =>
+        console.log(r.action === 'Started' ? `시작: ${r.macroId}` : `정지: ${r.macroId}`),
+      )
+    }
+
     case 'source': {
       const id = need(rest[0], '매크로 id')
       const { source } = await client.macros.graph(id)
       return emit({ macroId: id, source }, r => console.log(r.source))
+    }
+
+    case 'save': {
+      const id = need(rest[0], '매크로 id')
+      const target = rest[1]
+      const source = target === undefined || target === '-' ? await readStdin() : await readFile(target, 'utf8')
+      await client.macros.saveSource(id, source)
+      return emit({ macroId: id }, r => console.log(`저장됨: ${r.macroId}`))
     }
 
     case 'graph': {
@@ -405,7 +496,7 @@ function short(hash) {
   return typeof hash === 'string' ? `${hash.slice(0, 12)}…` : String(hash)
 }
 
-async function libraryCommand(client, args, options) {
+async function libraryCommand(client, args, options, config) {
   const [sub, ...rest] = args
   const lang = options.lang
 
@@ -477,7 +568,7 @@ async function libraryCommand(client, args, options) {
         revision = (await client.library.get(lang, owner, id)).revision
       }
       const started = await client.library.run(lang, owner, id, revision, options.backend)
-      return emit(started, r => console.log(`실행: ${r.macroId} (입력 모드 ${r.backend})`))
+      return emit(withBackendSource(started, options, config), r => console.log(`실행: ${r.macroId} (입력 모드 ${r.backend})`))
     }
 
     case 'save': {
@@ -511,7 +602,7 @@ async function libraryCommand(client, args, options) {
 
 // --- groups ------------------------------------------------------------
 
-async function groupsCommand(client, args, options) {
+async function groupsCommand(client, args, options, config) {
   const [sub, ...rest] = args
 
   switch (sub ?? 'list') {
@@ -560,7 +651,7 @@ async function groupsCommand(client, args, options) {
       const id = need(rest[0], '그룹 id')
       const macroId = need(rest[1], '매크로 id')
       const group = await client.groups.addMember(id, macroId, options.backend)
-      return emit(group, g => console.log(`${g.name}에 ${macroId}를 넣었습니다 (입력 모드 ${options.backend}).`))
+      return emit(withBackendSource(group, options, config), g => console.log(`${g.name}에 ${macroId}를 넣었습니다 (입력 모드 ${options.backend}).`))
     }
 
     case 'drop': {
